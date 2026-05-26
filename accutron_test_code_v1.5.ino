@@ -71,20 +71,32 @@ void loop() {
     terminalVoltage = 0.0;
   }
 
-  display.clearDisplay();
+display.clearDisplay();
 
-  // Voltage line
+char voltageText[8];
+char currentText[8];
+
+// Fixed-width fields:
+// "%5.2f" gives " 1.64"
+// "%4.1f" gives " 0.0" or "16.0"
+  dtostrf(terminalVoltage, 5, 2, voltageText);
+  dtostrf(current_uA, 4, 1, currentText);
+
   display.setTextSize(3);
-  display.setCursor(15, 11);
-  display.print(terminalVoltage, 2);
+
+  // Voltage number
+  display.setCursor(4, 11);
+  display.print(voltageText);
+
+  // Voltage unit
+  display.setCursor(96, 11);
   display.print("V");
 
   // Current number
-  display.setTextSize(3);
-  display.setCursor(2, 39);
-  display.print(current_uA, 1);
+  display.setCursor(4, 39);
+  display.print(currentText);
 
-  // Locked unit position
+  // Current unit
   display.setCursor(88, 39);
   display.print("uA");
 
