@@ -103,7 +103,7 @@ void loop() {
   display.clearDisplay();
   display.setTextSize(3);
 
-  display.setCursor(8, 11);
+  display.setCursor(3, 11);
   display.print(voltageText);
 
   display.setCursor(104, 11);
