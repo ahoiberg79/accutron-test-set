@@ -11,19 +11,30 @@ Adafruit_ADS1115 ads;
 
 const float senseResistor = 1000.0;
 const float protectionResistor = 470.0;
+
 const float zeroDeadband_uA = 3.0;
 
-float readAvgVoltage(uint8_t channel) {
-  long sum = 0;
-  const int samples = 100;
+// Detect voltage adjustment
+const float voltageMoveThreshold = 0.006;
+const int blankLoopsAfterMove = 3;
+
+float previousVoltage = 0.0;
+int blankCounter = 0;
+
+void readAveragedPair(float &vA1, float &vA0) {
+  long sumA1 = 0;
+  long sumA0 = 0;
+
+  const int samples = 50;
 
   for (int i = 0; i < samples; i++) {
-    sum += ads.readADC_SingleEnded(channel);
-    delay(2);
+    sumA1 += ads.readADC_SingleEnded(1);
+    sumA0 += ads.readADC_SingleEnded(0);
+    delay(1);
   }
 
-  float avgRaw = sum / (float)samples;
-  return avgRaw * 0.000125; // GAIN_ONE = 0.125mV/bit
+  vA1 = (sumA1 / (float)samples) * 0.000125;
+  vA0 = (sumA0 / (float)samples) * 0.000125;
 }
 
 void setup() {
@@ -51,8 +62,8 @@ void setup() {
 }
 
 void loop() {
-  float vA1 = readAvgVoltage(1);  // before 1k sense resistor
-  float vA0 = readAvgVoltage(0);  // after 1k sense resistor, before 470R
+  float vA1, vA0;
+  readAveragedPair(vA1, vA0);
 
   float current_uA = ((vA1 - vA0) / senseResistor) * 1000000.0;
 
@@ -64,43 +75,52 @@ void loop() {
     current_uA = 0.0;
   }
 
-  // Correct displayed voltage for drop across 470R protection resistor
-  float terminalVoltage = vA0 - ((current_uA / 1000000.0) * protectionResistor);
+  float terminalVoltage =
+      vA0 - ((current_uA / 1000000.0) * protectionResistor);
 
   if (terminalVoltage < 0.0) {
     terminalVoltage = 0.0;
   }
 
-display.clearDisplay();
+  float voltageChange = abs(terminalVoltage - previousVoltage);
 
-char voltageText[8];
-char currentText[8];
+  if (voltageChange > voltageMoveThreshold) {
+    blankCounter = blankLoopsAfterMove;
+    current_uA = 0.0;   // discard transient calculation
+  } else if (blankCounter > 0) {
+    blankCounter--;
+    current_uA = 0.0;   // keep blanking while settling
+  }
 
-// Fixed-width fields:
-// "%5.2f" gives " 1.64"
-// "%4.1f" gives " 0.0" or "16.0"
+  previousVoltage = terminalVoltage;
+
+  char voltageText[8];
+  char currentText[8];
+
   dtostrf(terminalVoltage, 5, 2, voltageText);
   dtostrf(current_uA, 4, 1, currentText);
 
+  display.clearDisplay();
   display.setTextSize(3);
 
-  // Voltage number
-  display.setCursor(4, 11);
+  display.setCursor(8, 11);
   display.print(voltageText);
 
-  // Voltage unit
-  display.setCursor(96, 11);
+  display.setCursor(104, 11);
   display.print("V");
 
-  // Current number
   display.setCursor(4, 39);
-  display.print(currentText);
 
-  // Current unit
+  if (blankCounter > 0) {
+    display.print("--.-");
+  } else {
+    display.print(currentText);
+  }
+
   display.setCursor(88, 39);
   display.print("uA");
 
   display.display();
 
-  delay(250);
+  delay(100);
 }
