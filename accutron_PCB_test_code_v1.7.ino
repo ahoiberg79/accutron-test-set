@@ -37,7 +37,6 @@ int currentBufferIndex = 0;
 int currentBufferCount = 0;
 
 // Final display damping after rolling average.
-// 0.10 to 0.18 is a useful range.
 // Lower = steadier/slower. Higher = faster/jumpier.
 const float currentDisplaySmoothing = 0.12;
 
@@ -54,10 +53,9 @@ const int requiredJumpPersistence = 3;
 int jumpPersistenceCounter = 0;
 float pendingJumpCurrent_uA = 0.0;
 
-// High-current detection.
-// This should eventually be movement-selectable.
-// For 218/219, 10uA is a practical warning threshold.
-const float highCurrentThreshold_uA = 10.0;
+// Neutral caution flag only.
+// Tester does not know movement type, so this should not be treated as pass/fail.
+const float highCurrentThreshold_uA = 12.0;
 const int highCurrentPersistenceBlocks = 4;
 int highCurrentCounter = 0;
 bool highCurrentFlag = false;
@@ -66,14 +64,19 @@ bool highCurrentFlag = false;
 // Voltage / adjustment blanking
 // -----------------------------
 
-// Voltage change required to treat pot as being adjusted.
-// 0.006V = 6mV.
-const float voltageMoveThreshold = 0.006;
+// Larger threshold prevents normal phasing drift from being treated as pot movement.
+const float voltageMoveThreshold = 0.025;       // 25mV
+const int voltageMoveConfirmCount = 3;          // require repeated movement
+const unsigned long currentReacquire_ms = 500;  // blank after confirmed adjustment
 
-// Time after last detected voltage movement before current is shown again.
-const unsigned long currentReacquire_ms = 500;
+// Below this, output is considered STOP/OFF.
+// Current readings at near-zero output voltage are not meaningful.
+const float outputOffThreshold_V = 0.10;
 
 float previousVoltage = 0.0;
+float stableVoltageReference = 0.0;
+int voltageMoveCounter = 0;
+
 unsigned long lastVoltageMove_ms = 0;
 bool currentDisplayValid = false;
 
@@ -84,6 +87,7 @@ bool currentDisplayValid = false;
 float readOutputVoltage();
 float readCurrentBlock_uA();
 void resetCurrentFilter(float seedCurrent_uA);
+void clearCurrentFilter();
 float averageCurrentBuffer();
 float processCurrentForDisplay(float rawCurrent_uA);
 void updateHighCurrentFlag(float rawCurrent_uA);
@@ -114,7 +118,8 @@ void setup() {
 
   ads.setGain(GAIN_ONE);
 
-  // Initialize timing so current does not appear instantly on boot.
+  stableVoltageReference = 0.0;
+  previousVoltage = 0.0;
   lastVoltageMove_ms = millis();
 
   display.clearDisplay();
@@ -127,44 +132,61 @@ void setup() {
 
 void loop() {
   // 1. Read actual output terminal voltage from A2.
-  //    This is separate from A1/A0 current sampling.
   float terminalVoltage = readOutputVoltage();
 
-  // 2. Detect pot movement / output voltage adjustment.
-  float voltageChange = fabs(terminalVoltage - previousVoltage);
+  // 2. Treat very low output as STOP/OFF.
+  bool outputOff = terminalVoltage < outputOffThreshold_V;
 
-  if (voltageChange > voltageMoveThreshold) {
+  if (outputOff) {
+    // In STOP/OFF, current display is intentionally blanked.
+    // Any current reading here is not useful watch-current information.
     lastVoltageMove_ms = millis();
     currentDisplayValid = false;
-    currentBufferCount = 0;
-    currentBufferIndex = 0;
-    jumpPersistenceCounter = 0;
-    highCurrentCounter = 0;
-    highCurrentFlag = false;
+    clearCurrentFilter();
+
+    stableVoltageReference = terminalVoltage;
+    voltageMoveCounter = 0;
+  } else {
+    // 3. Detect deliberate voltage movement without reacting to small drift.
+    float voltageChangeFromStable = fabs(terminalVoltage - stableVoltageReference);
+
+    if (voltageChangeFromStable > voltageMoveThreshold) {
+      voltageMoveCounter++;
+
+      if (voltageMoveCounter >= voltageMoveConfirmCount) {
+        lastVoltageMove_ms = millis();
+        currentDisplayValid = false;
+        clearCurrentFilter();
+
+        // Set new baseline after confirmed movement.
+        stableVoltageReference = terminalVoltage;
+        voltageMoveCounter = 0;
+      }
+    } else {
+      // Slowly track minor drift without declaring adjustment.
+      stableVoltageReference =
+        (stableVoltageReference * 0.95) + (terminalVoltage * 0.05);
+
+      voltageMoveCounter = 0;
+    }
   }
 
   previousVoltage = terminalVoltage;
 
-  // 3. Always measure current as a fresh paired A1/A0 block.
-  //    But do not always feed it into the display filter.
+  // 4. Always measure a fresh current block.
+  //    It is only displayed/filtered when voltage is valid and stable.
   float rawCurrent_uA = readCurrentBlock_uA();
 
-  // 4. Decide whether current display is allowed.
+  // 5. Current display is allowed only after reacquire time and above OFF threshold.
   bool voltageRecentlyMoved =
     (millis() - lastVoltageMove_ms) < currentReacquire_ms;
 
-  bool showCurrent = !voltageRecentlyMoved;
+  bool showCurrent = !voltageRecentlyMoved && !outputOff;
 
   if (!showCurrent) {
-    // During adjustment / reacquire:
-    // - do not update filter
-    // - do not show stale current
     currentDisplayValid = false;
-    currentBufferCount = 0;
-    currentBufferIndex = 0;
-    jumpPersistenceCounter = 0;
+    clearCurrentFilter();
   } else {
-    // First valid current after voltage has settled.
     if (!currentDisplayValid) {
       resetCurrentFilter(rawCurrent_uA);
       displayedCurrent_uA = rawCurrent_uA;
@@ -225,9 +247,6 @@ float readCurrentBlock_uA() {
 
   // Paired sampling:
   // A1, A0, A1, A0...
-  //
-  // This is important because current is the instantaneous
-  // difference across the 1k sense resistor.
   for (int i = 0; i < currentBlockSamples; i++) {
     sumHi += ads.readADC_SingleEnded(CH_SENSE_HI);
     sumLo += ads.readADC_SingleEnded(CH_SENSE_LO);
@@ -240,7 +259,7 @@ float readCurrentBlock_uA() {
   float current_uA =
     ((vSenseHi - vSenseLo) / senseResistor_ohms) * 1000000.0;
 
-  // Clamp very small ADC noise to zero.
+  // Clamp tiny ADC noise to zero.
   if (current_uA > -zeroDeadband_uA && current_uA < zeroDeadband_uA) {
     current_uA = 0.0;
   }
@@ -254,7 +273,7 @@ float readCurrentBlock_uA() {
 }
 
 // -----------------------------
-// Current filter reset
+// Current filter reset / clear
 // -----------------------------
 
 void resetCurrentFilter(float seedCurrent_uA) {
@@ -270,6 +289,23 @@ void resetCurrentFilter(float seedCurrent_uA) {
 
   jumpPersistenceCounter = 0;
   pendingJumpCurrent_uA = seedCurrent_uA;
+
+  highCurrentCounter = 0;
+  highCurrentFlag = false;
+}
+
+void clearCurrentFilter() {
+  currentBufferIndex = 0;
+  currentBufferCount = 0;
+
+  filteredCurrent_uA = 0.0;
+  displayedCurrent_uA = 0.0;
+
+  jumpPersistenceCounter = 0;
+  pendingJumpCurrent_uA = 0.0;
+
+  highCurrentCounter = 0;
+  highCurrentFlag = false;
 }
 
 // -----------------------------
@@ -301,10 +337,8 @@ float processCurrentForDisplay(float rawCurrent_uA) {
   bool largeJump = delta > currentJumpThreshold_uA;
 
   if (largeJump) {
-    // If current suddenly changes by a large amount,
-    // do not immediately trust one block.
-    //
-    // A real high-current condition will persist.
+    // A real current change will persist.
+    // A one-block spike is ignored.
     if (jumpPersistenceCounter == 0) {
       pendingJumpCurrent_uA = rawCurrent_uA;
       jumpPersistenceCounter = 1;
@@ -344,7 +378,7 @@ float processCurrentForDisplay(float rawCurrent_uA) {
 }
 
 // -----------------------------
-// High-current detection
+// High-current caution flag
 // -----------------------------
 
 void updateHighCurrentFlag(float rawCurrent_uA) {
@@ -372,6 +406,8 @@ void drawDisplay(float terminalVoltage, float current_uA, bool showCurrent) {
   dtostrf(current_uA, 4, 1, currentText);
 
   display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
   display.setTextSize(3);
 
   // Voltage
@@ -393,16 +429,13 @@ void drawDisplay(float terminalVoltage, float current_uA, bool showCurrent) {
   display.setCursor(88, 39);
   display.print("uA");
 
-  // Layout preserved.
-  // Optional future use:
-  // You could add a small warning mark using text size 1,
-  // but this is intentionally disabled to keep the current layout clean.
-  //
-  // if (highCurrentFlag) {
-  //   display.setTextSize(1);
-  //   display.setCursor(104, 56);
-  //   display.print("HIGH");
-  // }
+  // Optional neutral high-current caution marker.
+  // Tester does not know movement type, so use "HI?" only as a caution.
+  if (showCurrent && highCurrentFlag) {
+    display.setTextSize(1);
+    display.setCursor(109, 56);
+    display.print("HI?");
+  }
 
   display.display();
 }
@@ -427,6 +460,6 @@ void printDebug(float vOutput, float rawCurrent_uA, float filteredCurrent_uA, bo
   Serial.print(" uA  SHOW=");
   Serial.print(showCurrent ? "YES" : "NO");
 
-  Serial.print("  HIGH=");
+  Serial.print("  HI?=");
   Serial.println(highCurrentFlag ? "YES" : "NO");
 }
