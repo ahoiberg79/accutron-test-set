@@ -214,6 +214,12 @@ The design is inspired by original Bulova test equipment but implemented using m
 
 The current display is intended to mimic the useful behavior of an analog microamp meter while preserving a true measured current value from the 1k sense resistor.
 
+3D Printed Potentiometer Knob I used can be found here: https://makerworld.com/en/models/1847807-25mm-potentiometer-knob-mxr-fender-style-6-35mm?from=search#profileId-2546846
+
+3D Printed 0.96 OLED Panel Mount I used can be found here: https://www.printables.com/model/569276-ssd1306-adapter-for-enclosure-mounting/files
+
+3D Printed enclosure I designed can be found here (top): 
+
 ---
 
 ## Future Development
