@@ -218,7 +218,7 @@ The current display is intended to mimic the useful behavior of an analog microa
 
 3D Printed 0.96 OLED Panel Mount I used can be found here: https://www.printables.com/model/569276-ssd1306-adapter-for-enclosure-mounting/files
 
-3D Printed enclosure I designed can be found here (top): 
+3D Printed enclosure I designed can be found here: https://makerworld.com/en/models/2901741-modern-accutron-test-set-enclosure#profileId-3243880
 
 ---
 
